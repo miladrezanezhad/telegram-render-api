@@ -1,19 +1,21 @@
 import express from "express";
 import fs from "fs";
+import path from "path";
 
 const app = express();
 app.use(express.json());
 
-// دریافت پیام‌ها از تلگرام (Webhook)
+const FILE_PATH = "/tmp/messages.json";
+
+// دریافت پیام از تلگرام
 app.post("/webhook", (req, res) => {
   const update = req.body;
 
-  // اگر پیام متنی بود ذخیره کن
   if (update.message && update.message.text) {
     let messages = [];
 
-    if (fs.existsSync("/tmp/messages.json")) {
-      messages = JSON.parse(fs.readFileSync("/tmp/messages.json"));
+    if (fs.existsSync(FILE_PATH)) {
+      messages = JSON.parse(fs.readFileSync(FILE_PATH));
     }
 
     messages.push({
@@ -21,7 +23,7 @@ app.post("/webhook", (req, res) => {
       date: update.message.date
     });
 
-    fs.writeFileSync("/tmp/messages.json", JSON.stringify(messages, null, 2));
+    fs.writeFileSync(FILE_PATH, JSON.stringify(messages, null, 2));
   }
 
   res.json({ ok: true });
@@ -29,12 +31,17 @@ app.post("/webhook", (req, res) => {
 
 // نمایش پیام‌ها برای Worker
 app.get("/messages", (req, res) => {
-  if (!fs.existsSync("/tmp/messages.json")) {
-    return res.json([]);
+  try {
+    if (!fs.existsSync(FILE_PATH)) return res.json([]);
+    const messages = JSON.parse(fs.readFileSync(FILE_PATH));
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to read messages" });
   }
+});
 
-  const messages = JSON.parse(fs.readFileSync("/tmp/messages.json"));
-  res.json(messages);
+app.get("/", (req, res) => {
+  res.send("Render Telegram API is running.");
 });
 
 app.listen(3000, () => console.log("Server running on port 3000"));
