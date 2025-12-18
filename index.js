@@ -1,12 +1,13 @@
 import express from "express";
 import fs from "fs";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
 const FILE_PATH = "/tmp/messages.json";
 
-// تابع کمکی برای خواندن پیام‌ها از فایل
+// خواندن پیام‌ها از فایل
 function loadMessages() {
   if (!fs.existsSync(FILE_PATH)) return [];
   try {
@@ -16,7 +17,7 @@ function loadMessages() {
   }
 }
 
-// تابع کمکی برای ذخیره پیام‌ها
+// ذخیره پیام‌ها در فایل
 function saveMessages(messages) {
   fs.writeFileSync(FILE_PATH, JSON.stringify(messages, null, 2));
 }
@@ -26,7 +27,7 @@ app.post("/webhook", (req, res) => {
   const update = req.body;
   let messages = loadMessages();
 
-  // پیام‌های چت خصوصی / گروه
+  // پیام‌های چت معمولی / گروه / pv
   if (update.message) {
     const m = update.message;
 
@@ -39,12 +40,13 @@ app.post("/webhook", (req, res) => {
       source: "message"
     };
 
-    // متن ساده
+    // فقط متن
     if (m.text) {
       messages.push({
         ...base,
         mediaType: null,
-        fileId: null
+        fileId: null,
+        fileName: null
       });
     }
 
@@ -54,7 +56,8 @@ app.post("/webhook", (req, res) => {
       messages.push({
         ...base,
         mediaType: "photo",
-        fileId: largestPhoto.file_id
+        fileId: largestPhoto.file_id,
+        fileName: null
       });
     }
 
@@ -63,7 +66,8 @@ app.post("/webhook", (req, res) => {
       messages.push({
         ...base,
         mediaType: "video",
-        fileId: m.video.file_id
+        fileId: m.video.file_id,
+        fileName: null
       });
     }
 
@@ -91,12 +95,13 @@ app.post("/webhook", (req, res) => {
       source: "channel_post"
     };
 
-    // متن ساده
+    // متن
     if (p.text) {
       messages.push({
         ...base,
         mediaType: null,
-        fileId: null
+        fileId: null,
+        fileName: null
       });
     }
 
@@ -106,7 +111,8 @@ app.post("/webhook", (req, res) => {
       messages.push({
         ...base,
         mediaType: "photo",
-        fileId: largestPhoto.file_id
+        fileId: largestPhoto.file_id,
+        fileName: null
       });
     }
 
@@ -115,11 +121,12 @@ app.post("/webhook", (req, res) => {
       messages.push({
         ...base,
         mediaType: "video",
-        fileId: p.video.file_id
+        fileId: p.video.file_id,
+        fileName: null
       });
     }
 
-    // فایل (document)
+    // فایل
     if (p.document) {
       messages.push({
         ...base,
@@ -134,14 +141,53 @@ app.post("/webhook", (req, res) => {
   res.json({ ok: true });
 });
 
-// برگردوندن لیست پیام‌ها برای Worker
+// لیست پیام‌ها برای Worker
 app.get("/messages", (req, res) => {
   const messages = loadMessages();
-
-  // اختیاری: مرتب‌سازی از جدید به قدیم
   messages.sort((a, b) => (b.date || 0) - (a.date || 0));
-
   res.json(messages);
+});
+
+// پروکسی مدیا: Render → Telegram → کاربر
+app.get("/media/:fileId", async (req, res) => {
+  const fileId = req.params.fileId;
+  const botToken = process.env.BOT_TOKEN;
+
+  if (!botToken) {
+    return res.status(500).json({ error: "BOT_TOKEN is not set on Render" });
+  }
+
+  try {
+    // مرحله ۱: گرفتن file_path
+    const infoRes = await fetch(
+      `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
+    );
+    const info = await infoRes.json();
+
+    if (!info.ok) {
+      return res.status(400).json({ error: "Cannot get file info", details: info });
+    }
+
+    const filePath = info.result.file_path;
+
+    // مرحله ۲: دانلود فایل از تلگرام
+    const fileRes = await fetch(
+      `https://api.telegram.org/file/bot${botToken}/${filePath}`
+    );
+
+    if (!fileRes.ok) {
+      return res.status(400).json({ error: "Cannot download file from Telegram" });
+    }
+
+    // پاس دادن header نوع محتوا
+    res.setHeader("Content-Type", fileRes.headers.get("content-type") || "application/octet-stream");
+
+    // استریم فایل به کلاینت
+    fileRes.body.pipe(res);
+  } catch (err) {
+    console.error("MEDIA PROXY ERROR:", err);
+    res.status(500).json({ error: "Proxy failed", details: err.message });
+  }
 });
 
 // روت اصلی برای تست
@@ -149,4 +195,6 @@ app.get("/", (req, res) => {
   res.send("Render Telegram API is running.");
 });
 
-app.listen(3000, () => console.log("Server running on port 3000"));
+app.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
